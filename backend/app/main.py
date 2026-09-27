@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import os
 import uuid
@@ -26,10 +26,10 @@ sessions: dict[str, GameState] = {}
 
 
 class NewGameRequest(BaseModel):
-    player_name: str
-    player_age: int
+    player_name: str = Field(min_length=1, max_length=30)
+    player_age: int = Field(ge=2, le=12)
     mode: str = "letters"
-    max_rounds: int = 10
+    max_rounds: int = Field(10, ge=1, le=30)
 
 
 class AnswerRequest(BaseModel):
@@ -60,18 +60,12 @@ async def new_game(req: NewGameRequest):
     session_id = str(uuid.uuid4())
     sessions[session_id] = game
 
-    first_round = game.current
     return {
         "session_id": session_id,
         "player_name": game.player_name,
         "difficulty": game.difficulty.value,
         "max_rounds": game.max_rounds,
-        "round": {
-            "number": first_round.number,
-            "prompt": first_round.prompt,
-            "prompt_type": first_round.prompt_type,
-            "image_url": first_round.image_url,
-        },
+        "round": game.current.public(),
     }
 
 
@@ -135,10 +129,5 @@ async def get_state(session_id: str):
         "current_round": game.current_round + 1,
         "max_rounds": game.max_rounds,
         "is_active": game.is_active,
-        "round": {
-            "number": current.number,
-            "prompt": current.prompt,
-            "prompt_type": current.prompt_type,
-            "image_url": current.image_url,
-        } if current else None,
+        "round": current.public() if current else None,
     }

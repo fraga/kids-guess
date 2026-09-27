@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from enum import Enum
 import random
+import re
 
 
 class GameMode(str, Enum):
@@ -27,6 +28,15 @@ class Round:
     accepted_answers: list[str] = field(default_factory=list)  # Synonyms/alternatives
     hint: str = ""
     image_url: str = ""
+
+    def public(self) -> dict:
+        """Round info for the client; image rounds omit the answer word."""
+        return {
+            "number": self.number,
+            "prompt": None if self.prompt_type == "image" else self.prompt,
+            "prompt_type": self.prompt_type,
+            "image_url": self.image_url,
+        }
 
 
 @dataclass
@@ -153,6 +163,31 @@ def create_game(
     )
 
 
+_FILLER = {"a", "an", "the", "it", "its", "it's", "is", "this", "that", "letter", "i", "think", "um", "uh"}
+
+
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z']+", text.lower())
+
+
+def _matches(round_: Round, spoken: str) -> bool:
+    tokens = _tokens(spoken)
+    # Fall back to all tokens when the answer is only filler, e.g. "A" or "it's I".
+    words = [t for t in tokens if t not in _FILLER] or tokens
+
+    for answer in (round_.correct_answer, *round_.accepted_answers):
+        target = _tokens(answer)
+        n = len(target)
+        if n and any(words[i:i + n] == target for i in range(len(words) - n + 1)):
+            return True
+
+    # Letters mode also accepts a word starting with the letter (see specs/design.md).
+    if round_.prompt_type == "letter":
+        letter = round_.correct_answer.lower()
+        return any(len(w) > 1 and w.startswith(letter) for w in words)
+    return False
+
+
 def check_answer(game: GameState, spoken: str) -> dict:
     """Validate a spoken answer against the current round.
 
@@ -160,28 +195,17 @@ def check_answer(game: GameState, spoken: str) -> dict:
         correct: bool
         score: int (updated)
         streak: int (updated)
-        feedback: str ("correct", "close", "wrong")
+        feedback: str ("correct", "wrong", "game_over")
         move_on: bool (advance to next round)
     """
     if not game.current:
         return {"correct": False, "feedback": "game_over", "move_on": False, "score": game.score, "streak": game.streak}
 
-    answer = spoken.strip().lower()
-    target = game.current.correct_answer.lower()
-    accepted = [a.lower() for a in game.current.accepted_answers]
-
-    if answer == target or answer in accepted:
+    if _matches(game.current, spoken):
         game.score += 1
         game.streak += 1
         game.best_streak = max(game.best_streak, game.streak)
         return {"correct": True, "feedback": "correct", "move_on": True, "score": game.score, "streak": game.streak}
-
-    # Partial match / close
-    if target in answer or answer in target:
-        game.score += 1
-        game.streak += 1
-        game.best_streak = max(game.best_streak, game.streak)
-        return {"correct": True, "feedback": "close", "move_on": True, "score": game.score, "streak": game.streak}
 
     game.streak = 0
     return {"correct": False, "feedback": "wrong", "move_on": False, "score": game.score, "streak": game.streak}
@@ -199,13 +223,9 @@ def advance_round(game: GameState) -> dict:
             "best_streak": game.best_streak,
         }
 
-    r = game.current
     return {
         "status": "next_round",
-        "round": r.number,
-        "prompt": r.prompt,
-        "prompt_type": r.prompt_type,
-        "image_url": r.image_url,
+        "round": game.current.public(),
         "score": game.score,
         "streak": game.streak,
     }
